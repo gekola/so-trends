@@ -28,14 +28,24 @@ NORMALIZATION = {
     "Rails": "Ruby on Rails",
 }
 
-# (keyword1, keyword2) — both must appear in column name (case-insensitive)
+# All keywords in a tuple must appear in the column name (case-insensitive)
 COLUMN_PATTERNS = [
     ("webframe", "worked"),
     ("misctech", "worked"),
     ("framework", "worked"),
+    ("database", "worked"),
+    ("language", "worked"),
+    ("platform", "worked"),
+    ("toolstech", "worked"),
+    ("collabtools", "worked"),
+    ("embedded", "worked"),
+    ("officestack", "worked"),
+    ("ai", "worked"),
+    ("opsy",),
+    ("versioncontrol",),
 ]
 # exact column names to also include
-COLUMN_EXACT = {"tech_do"}
+COLUMN_EXACT = {"tech_do", "IDE", "OpSys"}
 
 # 2011-2014: long-form question text that starts a checkbox group
 CHECKBOX_QUESTION_PATTERNS = [
@@ -54,7 +64,7 @@ def find_columns(con):
     structured = [
         c for c in cols
         if c in COLUMN_EXACT
-        or any(p1 in c.lower() and p2 in c.lower() for p1, p2 in COLUMN_PATTERNS)
+        or any(all(kw in c.lower() for kw in pat) for pat in COLUMN_PATTERNS)
     ]
     if structured:
         return structured
@@ -132,8 +142,20 @@ def build_cache(years=YEARS, base_path=BASE_PATH, cache_path=CACHE_PATH):
 def _apply_normalization(df: "pd.DataFrame", techs: list, normalization: dict) -> "pd.DataFrame":
     ci_norm = {k.lower(): v for k, v in normalization.items()}
     ci_norm.update({t.lower(): t for t in techs if t.lower() not in ci_norm})
+    # Sort longest alias first so more specific patterns win
+    patterns = [
+        (re.compile(r'\b' + re.escape(k) + r'\b'), v)
+        for k, v in sorted(ci_norm.items(), key=lambda x: -len(x[0]))
+    ]
+
+    def _match(raw_lower):
+        for pat, canonical in patterns:
+            if pat.search(raw_lower):
+                return canonical
+        return None
+
     df = df.copy()
-    df["tech"] = df["raw_tech"].str.lower().map(ci_norm)
+    df["tech"] = df["raw_tech"].str.lower().apply(_match)
     df = df.dropna(subset=["tech"])
     df = df.groupby(["year", "tech"], as_index=False).agg({"cnt": "sum", "total": "first"})
     df["pct"] = df["cnt"] / df["total"] * 100
