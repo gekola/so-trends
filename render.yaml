@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: soq
+    runtime: python
+    buildCommand: pip install -e ".[production]"
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PRODUCTION
+        value: "1"
+      - key: PYTHON_VERSION
+        value: "3.13.0"

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SO Survey Trends</title>
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --accent:   #58a6ff;
+      --danger:   #f85149;
+      --radius:   6px;
+      --font:     ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+
+    body { display: flex; overflow: hidden; }
+
+    /* ── Sidebar ─────────────────────────────────────────── */
+    #panel {
+      width: 340px; min-width: 340px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    #panel-header {
+      padding: 16px 16px 10px;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px; font-weight: 600; color: var(--text);
+      flex-shrink: 0;
+    }
+    #panel-body { flex: 1; overflow-y: auto; padding: 14px 16px; }
+    #panel-footer { padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
+
+    .field { margin-bottom: 14px; }
+    .field label { display: block; color: var(--muted); margin-bottom: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+
+    input[type="text"], select {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: var(--radius); padding: 6px 8px;
+      font-family: var(--font); font-size: 13px; outline: none;
+    }
+    input[type="text"]:focus, select:focus { border-color: var(--accent); }
+
+    .year-row { display: flex; gap: 8px; }
+    .year-row > div { flex: 1; }
+    .year-row label { display: block; color: var(--muted); margin-bottom: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+
+    /* ── Tech rows ───────────────────────────────────────── */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .section-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+
+    #tech-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .tech-row {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 8px;
+    }
+    .tech-row.disabled { opacity: .45; }
+
+    .tech-row-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .tc-en { flex-shrink: 0; accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+    .tc-name { flex: 1; }
+    .tc-color {
+      width: 28px; height: 28px; padding: 2px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--bg); cursor: pointer; flex-shrink: 0;
+    }
+    .tc-del {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px; flex-shrink: 0;
+    }
+    .tc-del:hover { color: var(--danger); }
+
+    .tech-row-aliases { display: flex; align-items: center; gap: 6px; }
+    .aliases-label { color: var(--muted); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+    .tc-aliases { flex: 1; font-size: 12px; }
+
+    /* ── Buttons ─────────────────────────────────────────── */
+    .btn {
+      border: none; border-radius: var(--radius); padding: 7px 12px;
+      font-family: var(--font); font-size: 12px; cursor: pointer;
+    }
+    .btn-ghost {
+      background: none; color: var(--accent); border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { border-color: var(--accent); }
+    .btn-primary {
+      width: 100%; background: var(--accent); color: #0d1117; font-weight: 600;
+      font-size: 13px; padding: 9px;
+    }
+    .btn-primary:hover { opacity: .88; }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* ── Main area ───────────────────────────────────────── */
+    #main { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+
+    #chart-wrap {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; min-height: 200px; display: flex; align-items: center; justify-content: center;
+    }
+    #chart-wrap img { width: 100%; display: block; }
+    #chart-wrap .placeholder { color: var(--muted); font-size: 13px; }
+
+    #table-wrap { overflow-x: auto; }
+    .data-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .data-table th, .data-table td {
+      border: 1px solid var(--border); padding: 5px 10px; text-align: right;
+    }
+    .data-table th { background: var(--surface); color: var(--muted); font-weight: 500; }
+    .data-table td { color: var(--text); }
+    .data-table tr:hover td { background: var(--surface); }
+    #table-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    #table-header .btn-dl-all {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      border-radius: var(--radius); padding: 4px 10px; cursor: pointer;
+      font-family: var(--font); font-size: 11px;
+    }
+    #table-header .btn-dl-all:hover { border-color: var(--accent); color: var(--accent); }
+    .empty { color: var(--muted); font-size: 13px; }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    #footer {
+      font-size: 11px; color: var(--muted); border-top: 1px solid var(--border);
+      padding: 10px 0 0; line-height: 1.6;
+    }
+    #footer a { color: var(--muted); text-decoration: underline; }
+    #footer a:hover { color: var(--accent); }
+
+    /* ── Loading spinner ─────────────────────────────────── */
+    .spinner {
+      width: 28px; height: 28px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<aside id="panel">
+  <div id="panel-header">SO Survey Trends</div>
+
+  <div id="panel-body">
+    <div class="field">
+      <label>Chart title</label>
+      <input id="f-title" type="text" value="Adoption">
+    </div>
+
+    <div class="year-row field">
+      <div>
+        <label>From</label>
+        <select id="f-year-from"></select>
+      </div>
+      <div>
+        <label>To</label>
+        <select id="f-year-to"></select>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="section-header">
+        <span class="section-label">Technologies</span>
+        <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost" id="btn-clear">Clear</button>
+            <button class="btn btn-ghost" id="btn-add">+ Add</button>
+          </div>
+      </div>
+      <div id="tech-list"></div>
+    </div>
+  </div>
+
+  <div id="panel-footer">
+    <button class="btn btn-primary" id="btn-update">Update</button>
+  </div>
+</aside>
+
+<main id="main">
+  <div id="chart-wrap"><span class="placeholder">Click Update to generate chart</span></div>
+  <div id="table-wrap"></div>
+  <footer id="footer">
+    Data: <a href="https://survey.stackoverflow.co/" target="_blank">Stack Overflow Developer Survey</a>
+    &mdash; licensed under the
+    <a href="http://opendatacommons.org/licenses/odbl/1.0/" target="_blank">Open Database License (ODbL)</a>.
+    Any rights in individual contents of the database are licensed under the
+    <a href="http://opendatacommons.org/licenses/dbcl/1.0/" target="_blank">Database Contents License (DbCL)</a>.
+  </footer>
+</main>
+
+<script>
+const YEARS     = {{ years | tojson }};
+const DEF_CFG   = {{ default_config | tojson }};
+const YEAR_FROM = {{ default_year_from }};
+const YEAR_TO   = {{ default_year_to }};
+
+// ── Year selects ──────────────────────────────────────────
+const selFrom = document.getElementById('f-year-from');
+const selTo   = document.getElementById('f-year-to');
+YEARS.forEach(y => {
+  selFrom.add(new Option(y, y, false, y === YEAR_FROM));
+  selTo.add(  new Option(y, y, false, y === YEAR_TO));
+});
+selFrom.addEventListener('change', () => {
+  if (+selFrom.value > +selTo.value) selTo.value = selFrom.value;
+});
+selTo.addEventListener('change', () => {
+  if (+selTo.value < +selFrom.value) selFrom.value = selTo.value;
+});
+
+// ── Tech list ─────────────────────────────────────────────
+const list = document.getElementById('tech-list');
+
+function addTechRow(cfg) {
+  const row = document.createElement('div');
+  row.className = 'tech-row' + (cfg.enabled ? '' : ' disabled');
+  row.innerHTML = `
+    <div class="tech-row-top">
+      <input type="checkbox" class="tc-en" ${cfg.enabled ? 'checked' : ''}>
+      <input type="text" class="tc-name" value="${esc(cfg.name)}" placeholder="Technology">
+      <input type="color" class="tc-color" value="${esc(cfg.color || '#888888')}">
+      <button class="tc-del" title="Remove">×</button>
+    </div>
+    <div class="tech-row-aliases">
+      <span class="aliases-label">aliases:</span>
+      <input type="text" class="tc-aliases" value="${esc((cfg.aliases || []).join(', '))}" placeholder="alias1, alias2, …">
+    </div>`;
+
+  row.querySelector('.tc-en').addEventListener('change', e => {
+    row.classList.toggle('disabled', !e.target.checked);
+  });
+  row.querySelector('.tc-del').addEventListener('click', () => row.remove());
+  list.appendChild(row);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+DEF_CFG.forEach(addTechRow);
+
+document.getElementById('btn-clear').addEventListener('click', () => { list.innerHTML = ''; });
+
+document.getElementById('btn-add').addEventListener('click', () => {
+  addTechRow({ name: '', aliases: [], color: '#aaaaaa', enabled: true });
+  list.lastElementChild.querySelector('.tc-name').focus();
+});
+
+// ── Build request body ────────────────────────────────────
+function getConfig() {
+  const techs = Array.from(list.querySelectorAll('.tech-row')).map(row => ({
+    enabled: row.querySelector('.tc-en').checked,
+    name:    row.querySelector('.tc-name').value.trim(),
+    color:   row.querySelector('.tc-color').value,
+    aliases: row.querySelector('.tc-aliases').value
+               .split(',').map(s => s.trim()).filter(Boolean),
+  })).filter(t => t.name);
+
+  return {
+    title:     document.getElementById('f-title').value.trim() || 'Adoption',
+    year_from: +selFrom.value,
+    year_to:   +selTo.value,
+    techs,
+  };
+}
+
+// ── Update ────────────────────────────────────────────────
+const btnUpdate  = document.getElementById('btn-update');
+const chartWrap  = document.getElementById('chart-wrap');
+const tableWrap  = document.getElementById('table-wrap');
+
+async function update() {
+  btnUpdate.disabled = true;
+  btnUpdate.textContent = 'Loading…';
+  chartWrap.innerHTML = '<div class="spinner"></div>';
+
+  const body = JSON.stringify(getConfig());
+  const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body };
+
+  try {
+    const [chartResp, tableResp] = await Promise.all([
+      fetch('/chart', opts),
+      fetch('/table', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }),
+    ]);
+
+    if (!chartResp.ok) {
+      const msg = await chartResp.text();
+      chartWrap.innerHTML = `<span class="placeholder">${msg}</span>`;
+    } else {
+      const blob = await chartResp.blob();
+      const url  = URL.createObjectURL(blob);
+      chartWrap.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = url;
+      chartWrap.appendChild(img);
+    }
+
+    tableWrap.innerHTML = await tableResp.text();
+    addCsvColumn(tableWrap);
+  } catch (err) {
+    chartWrap.innerHTML = `<span class="placeholder">Error: ${err.message}</span>`;
+  } finally {
+    btnUpdate.disabled = false;
+    btnUpdate.textContent = 'Update';
+  }
+}
+
+btnUpdate.addEventListener('click', update);
+
+// ── CSV download button ───────────────────────────────────
+function addCsvColumn(wrap) {
+  const table = wrap.querySelector('table');
+  if (!table) return;
+
+  const headerRow = table.querySelector('thead tr');
+  // Label the index column that pandas leaves empty
+  const firstTh = headerRow.querySelector('th:first-child');
+  if (firstTh && !firstTh.textContent.trim()) firstTh.textContent = 'Year';
+  const headers = Array.from(headerRow.querySelectorAll('th')).map(th => th.textContent.trim());
+
+  // Download button above the table
+  const bar = document.createElement('div');
+  bar.id = 'table-header';
+  const btn = document.createElement('button');
+  btn.className = 'btn-dl-all';
+  btn.textContent = '⬇ Download CSV';
+  btn.addEventListener('click', () => {
+    const rows = [headers.join(',')];
+    table.querySelectorAll('tbody tr').forEach(tr => {
+      rows.push(Array.from(tr.querySelectorAll('th, td')).map(c => { const v = c.textContent.trim(); return v === '—' ? '' : v; }).join(','));
+    });
+    download(rows.join('\n'), 'soq_trends.csv');
+  });
+  bar.appendChild(btn);
+  wrap.insertBefore(bar, table);
+}
+
+function download(content, filename) {
+  const a = Object.assign(document.createElement('a'), {
+    href:     URL.createObjectURL(new Blob([content], { type: 'text/csv' })),
+    download: filename,
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Raw survey data (too large for git — run build_cache.py locally first)
+data/20*/
+
+# Generated output
+trend.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+
+# Claude Code session data
+.claude/
