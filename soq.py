@@ -13,20 +13,7 @@ YEARS = list(range(2011, 2026))
 BASE_PATH = Path("./data")
 CACHE_PATH = BASE_PATH / "cache.parquet"
 
-TECHS = [
-    "React.js",
-    "Angular",
-    "Vue.js",
-]
-
-NORMALIZATION = {
-    "AngularJS": "Angular",
-    "Angular.js": "Angular",
-    "React": "React.js",
-    "ReactJS": "React.js",
-    "Vue": "Vue.js",
-    "Rails": "Ruby on Rails",
-}
+ENTRY_COLUMN_PATTERNS = [("have", "entry")]
 
 # All keywords in a tuple must appear in the column name (case-insensitive)
 COLUMN_PATTERNS = [
@@ -55,6 +42,11 @@ CHECKBOX_QUESTION_PATTERNS = [
 ]
 # 2015: per-tech columns with explicit names ("Current Lang & Tech: AngularJS", …)
 COLUMN_PREFIXES = ["current lang & tech:"]
+
+
+def find_entry_columns(con):
+    cols = [c[0] for c in con.execute("DESCRIBE survey").fetchall()]
+    return [c for c in cols if any(all(kw in c.lower() for kw in pat) for pat in ENTRY_COLUMN_PATTERNS)]
 
 
 def find_columns(con):
@@ -87,8 +79,27 @@ def find_columns(con):
     return result
 
 
-def _load_raw_year(file: Path, year: int) -> "pd.DataFrame | None":
-    """Return (year, raw_tech, cnt, total) aggregated from one CSV, or None."""
+def _pairs_sql(col_list: list[str], year: int) -> str:
+    """SQL fragment: DISTINCT (year, rowid, raw_tech, total) pairs from a column list."""
+    col_expr = " || ';' || ".join(f'COALESCE("{c}", \'\')' for c in col_list)
+    return f"""
+        SELECT DISTINCT
+            {year} AS year,
+            rowid,
+            TRIM(value) AS raw_tech,
+            (SELECT COUNT(*) FROM survey) AS total
+        FROM survey,
+        UNNEST(STRING_SPLIT(REPLACE({col_expr}, ',', ';'), ';')) AS t(value)
+        WHERE TRIM(value) != ''
+    """
+
+
+def _load_year(file: Path, year: int) -> "tuple[pd.DataFrame | None, pd.DataFrame | None]":
+    """Return (structured_df, entry_df) as unaggregated (year, rowid, raw_tech, total) pairs.
+
+    entry_df contains only pairs from entry columns that are NOT already in structured_df
+    (EXCEPT logic), so the two DataFrames never overlap on (rowid, raw_tech).
+    """
     def _try_load(con, skip=0):
         opts = "AUTO_DETECT=TRUE, ALL_VARCHAR=TRUE" + (f", skip={skip}" if skip else "")
         try:
@@ -98,26 +109,45 @@ def _load_raw_year(file: Path, year: int) -> "pd.DataFrame | None":
 
     con = duckdb.connect()
     _try_load(con)
-    matched_cols = find_columns(con)
-    if not matched_cols:
+    struct_cols = find_columns(con)
+    entry_cols = find_entry_columns(con)
+    if not struct_cols and not entry_cols:
         con = duckdb.connect()
         _try_load(con, skip=1)
-        matched_cols = find_columns(con)
-    if not matched_cols:
-        return None
+        struct_cols = find_columns(con)
+        entry_cols = find_entry_columns(con)
 
-    col_expr = " || ';' || ".join(f'COALESCE("{c}", \'\')' for c in matched_cols)
-    return con.execute(f"""
-        SELECT
-            {year} AS year,
-            TRIM(value) AS raw_tech,
-            COUNT(*) AS cnt,
-            (SELECT COUNT(*) FROM survey) AS total
-        FROM survey,
-        UNNEST(STRING_SPLIT(REPLACE({col_expr}, ',', ';'), ';')) AS t(value)
-        WHERE TRIM(value) != ''
-        GROUP BY raw_tech
-    """).df()
+    struct_df = entry_df = None
+
+    if struct_cols:
+        struct_df = con.execute(_pairs_sql(struct_cols, year)).df()
+
+    if entry_cols:
+        entry_sql = _pairs_sql(entry_cols, year)
+        if struct_cols:
+            struct_sql = _pairs_sql(struct_cols, year)
+            # keep only pairs not already captured by structured columns
+            entry_df = con.execute(f"""
+                SELECT year, rowid, raw_tech, total FROM ({entry_sql})
+                EXCEPT
+                SELECT year, rowid, raw_tech, total FROM ({struct_sql})
+            """).df()
+        else:
+            entry_df = con.execute(entry_sql).df()
+
+    return struct_df, entry_df
+
+
+def _nest_pairs(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Aggregate unaggregated (year, rowid, raw_tech, total, is_entry) into nested format.
+
+    Returns (year, raw_tech, rowids: list[int], total, is_entry) — one row per
+    (year, raw_tech, is_entry) with respondent IDs collected into a sorted list.
+    Storing nested arrays cuts the cache size ~3× vs flat rows.
+    """
+    return (df.sort_values("rowid")
+              .groupby(["year", "raw_tech", "is_entry"], as_index=False)
+              .agg(rowids=("rowid", list), total=("total", "first")))
 
 
 def build_cache(years=YEARS, base_path=BASE_PATH, cache_path=CACHE_PATH):
@@ -126,48 +156,68 @@ def build_cache(years=YEARS, base_path=BASE_PATH, cache_path=CACHE_PATH):
         file = base_path / str(year) / "survey_results_public.csv"
         if not file.exists():
             continue
-        df = _load_raw_year(file, year)
-        if df is not None:
-            frames.append(df)
-            print(f"  {year}: {len(df)} raw tech entries")
+        sdf, edf = _load_year(file, year)
+        if sdf is not None:
+            sdf["is_entry"] = False
+            frames.append(sdf)
+            print(f"  {year}: {len(sdf)} structured pairs")
+        if edf is not None:
+            edf["is_entry"] = True
+            frames.append(edf)
+            print(f"  {year}: {len(edf)} write-in pairs")
+
     if not frames:
         raise RuntimeError("No data found — nothing to cache")
-    combined = pd.concat(frames, ignore_index=True)
+
+    nested = _nest_pairs(pd.concat(frames, ignore_index=True))
     con = duckdb.connect()
-    con.register("combined", combined)
-    con.execute(f"COPY combined TO '{cache_path}' (FORMAT PARQUET)")
-    print(f"Cache written → {cache_path.resolve()}  ({len(combined)} rows)")
+    con.register("nested", nested)
+    con.execute(f"COPY nested TO '{cache_path}' (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 22)")
+    print(f"  → {cache_path.resolve()}  ({len(nested)} rows)")
 
 
 def _apply_normalization(df: "pd.DataFrame", techs: list, normalization: dict) -> "pd.DataFrame":
+    """Map raw_tech → canonical tech, then count distinct respondents per (year, tech).
+
+    df must have columns: year, raw_tech, rowids (list[int]), total.
+    Double-counting is prevented by exploding rowids then nunique — a respondent who
+    matched multiple raw aliases for the same tech is counted only once.
+    """
     ci_norm = {k.lower(): v for k, v in normalization.items()}
     ci_norm.update({t.lower(): t for t in techs if t.lower() not in ci_norm})
     # Sort longest alias first so more specific patterns win
     patterns = [
-        (re.compile(r'\b' + re.escape(k) + r'\b'), v)
+        (re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE), v)
         for k, v in sorted(ci_norm.items(), key=lambda x: -len(x[0]))
     ]
 
-    def _match(raw_lower):
+    def _match(raw):
         for pat, canonical in patterns:
-            if pat.search(raw_lower):
+            if pat.search(raw):
                 return canonical
         return None
 
     df = df.copy()
-    df["tech"] = df["raw_tech"].str.lower().apply(_match)
+    df["tech"] = df["raw_tech"].apply(_match)
     df = df.dropna(subset=["tech"])
-    df = df.groupby(["year", "tech"], as_index=False).agg({"cnt": "sum", "total": "first"})
+    df = df.explode("rowids")
+    df = df.groupby(["year", "tech"], as_index=False).agg(
+        cnt=("rowids", "nunique"), total=("total", "first")
+    )
     df["pct"] = df["cnt"] / df["total"] * 100
     return df[["year", "tech", "pct"]]
 
 
-def load_trends(techs, normalization, years=YEARS, base_path=BASE_PATH, cache_path=CACHE_PATH):
+def load_trends(techs, normalization, years=YEARS, base_path=BASE_PATH, cache_path=CACHE_PATH,
+                include_entries=False):
+    y1, y2 = min(years), max(years)
+
     if cache_path.exists():
         con = duckdb.connect()
-        y1, y2 = min(years), max(years)
+        entry_filter = "" if include_entries else "AND NOT is_entry"
         df = con.execute(
-            f"SELECT * FROM read_parquet('{cache_path}') WHERE year BETWEEN {y1} AND {y2}"
+            f"SELECT * FROM read_parquet('{cache_path}') "
+            f"WHERE year BETWEEN {y1} AND {y2} {entry_filter}"
         ).df()
         df = _apply_normalization(df, techs, normalization)
     elif os.environ.get("PRODUCTION"):
@@ -178,13 +228,16 @@ def load_trends(techs, normalization, years=YEARS, base_path=BASE_PATH, cache_pa
             file = base_path / str(year) / "survey_results_public.csv"
             if not file.exists():
                 continue
-            raw = _load_raw_year(file, year)
-            if raw is None:
-                continue
-            frames.append(raw)
+            sdf, edf = _load_year(file, year)
+            if sdf is not None:
+                sdf["is_entry"] = False
+                frames.append(sdf)
+            if include_entries and edf is not None:
+                edf["is_entry"] = True
+                frames.append(edf)
         if not frames:
             return pd.DataFrame()
-        df = _apply_normalization(pd.concat(frames, ignore_index=True), techs, normalization)
+        df = _apply_normalization(_nest_pairs(pd.concat(frames, ignore_index=True)), techs, normalization)
 
     if df.empty:
         return pd.DataFrame()
@@ -201,7 +254,7 @@ def plot_trends(pivot, title="Adoption", output=None, colors=None) -> bytes | No
     years = pivot.index
     year_range = f"{years.min()}–{years.max()}" if len(years) > 1 else str(years[0])
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
     fig.patch.set_facecolor("#0d1117")
     ax.set_facecolor("#161b22")
 
@@ -234,7 +287,7 @@ def plot_trends(pivot, title="Adoption", output=None, colors=None) -> bytes | No
     plt.tight_layout()
     if output is None:
         buf = io.BytesIO()
-        plt.savefig(buf, format="png", dpi=220, bbox_inches="tight",
+        plt.savefig(buf, format="png", dpi=192, bbox_inches="tight",
                     facecolor=fig.get_facecolor())
         plt.close(fig)
         buf.seek(0)
@@ -244,7 +297,9 @@ def plot_trends(pivot, title="Adoption", output=None, colors=None) -> bytes | No
 
 
 if __name__ == "__main__":
-    pivot = load_trends(TECHS, NORMALIZATION)
+    techs = ["React.js", "Angular", "Vue.js"]
+    norm = {"AngularJS": "Angular", "React": "React.js", "Vue": "Vue.js"}
+    pivot = load_trends(techs, norm)
     print(pivot)
     out = Path("trend.png")
     plot_trends(pivot, title="Framework Adoption", output=out)

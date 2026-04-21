@@ -107,9 +107,11 @@
 
     #chart-wrap {
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-      overflow: hidden; min-height: 200px; display: flex; align-items: center; justify-content: center;
     }
-    #chart-wrap img { width: 100%; display: block; }
+    #chart-wrap img { display: block; width: 100%; border-radius: var(--radius); }
+    .chart-center {
+      display: flex; align-items: center; justify-content: center; min-height: 200px;
+    }
     #chart-wrap .placeholder { color: var(--muted); font-size: 13px; }
 
     #table-wrap { overflow-x: auto; }
@@ -181,14 +183,23 @@
   </div>
 
   <div id="panel-footer">
+    <label style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="f-entries" style="accent-color:var(--accent);width:14px;height:14px">
+      Include write-in entries
+    </label>
     <button class="btn btn-primary" id="btn-update">Update</button>
   </div>
 </aside>
 
 <main id="main">
-  <div id="chart-wrap"><span class="placeholder">Click Update to generate chart</span></div>
+  <div id="chart-wrap"><div class="chart-center"><span class="placeholder">Click Update to generate chart</span></div></div>
   <div id="table-wrap"></div>
   <footer id="footer">
+    <p style="margin-bottom:6px">
+      ⚠ Survey methodology, question wording, and answer options vary across years.
+      Absolute percentages are not directly comparable between years;
+      relative trends between technologies surveyed in the same year are more reliable.
+    </p>
     Data: <a href="https://survey.stackoverflow.co/" target="_blank">Stack Overflow Developer Survey</a>
     &mdash; licensed under the
     <a href="http://opendatacommons.org/licenses/odbl/1.0/" target="_blank">Open Database License (ODbL)</a>.
@@ -200,6 +211,7 @@
 <script>
 const YEARS     = {{ years | tojson }};
 const DEF_CFG   = {{ default_config | tojson }};
+const PALETTE   = {{ palette | tojson }};
 const YEAR_FROM = {{ default_year_from }};
 const YEAR_TO   = {{ default_year_to }};
 
@@ -251,7 +263,9 @@ DEF_CFG.forEach(addTechRow);
 document.getElementById('btn-clear').addEventListener('click', () => { list.innerHTML = ''; });
 
 document.getElementById('btn-add').addEventListener('click', () => {
-  addTechRow({ name: '', aliases: [], color: '#aaaaaa', enabled: true });
+  const used = new Set(Array.from(list.querySelectorAll('.tc-color')).map(el => el.value.toLowerCase()));
+  const color = PALETTE.find(c => !used.has(c)) ?? '#aaaaaa';
+  addTechRow({ name: '', aliases: [], color, enabled: true });
   list.lastElementChild.querySelector('.tc-name').focus();
 });
 
@@ -266,9 +280,10 @@ function getConfig() {
   })).filter(t => t.name);
 
   return {
-    title:     document.getElementById('f-title').value.trim() || 'Adoption',
-    year_from: +selFrom.value,
-    year_to:   +selTo.value,
+    title:           document.getElementById('f-title').value.trim() || 'Adoption',
+    year_from:       +selFrom.value,
+    year_to:         +selTo.value,
+    include_entries: document.getElementById('f-entries').checked,
     techs,
   };
 }
@@ -281,7 +296,7 @@ const tableWrap  = document.getElementById('table-wrap');
 async function update() {
   btnUpdate.disabled = true;
   btnUpdate.textContent = 'Loading…';
-  chartWrap.innerHTML = '<div class="spinner"></div>';
+  chartWrap.innerHTML = '<div class="chart-center"><div class="spinner"></div></div>';
 
   const body = JSON.stringify(getConfig());
   const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body };

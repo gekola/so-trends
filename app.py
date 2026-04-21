@@ -1,35 +1,42 @@
-from collections import defaultdict
-import matplotlib
-import matplotlib.pyplot as plt
 from flask import Flask, make_response, render_template, request
 
-from soq import YEARS, TECHS, NORMALIZATION, load_trends, plot_trends
+from soq import YEARS, load_trends, plot_trends
 
 app = Flask(__name__)
 
-# Build default per-tech config: colours from tab10, aliases from NORMALIZATION
-def _default_tech_config():
-    cmap = plt.get_cmap("tab10")
-    aliases_for = defaultdict(list)
-    for alias, canonical in NORMALIZATION.items():
-        aliases_for[canonical].append(alias)
-    sorted_techs = sorted(TECHS)  # matches pivot column order (alphabetical)
-    return [
-        {
-            "name": tech,
-            "aliases": aliases_for.get(tech, []),
-            "color": matplotlib.colors.to_hex(cmap(i)),
-            "enabled": True,
-        }
-        for i, tech in enumerate(sorted_techs)
-    ]
+# Matches PALETTE in index.html — used to assign default tech colors server-side.
+PALETTE = [
+    "#58a6ff",  # blue
+    "#f78166",  # coral
+    "#3fb950",  # green
+    "#d2a8ff",  # lavender
+    "#ffa657",  # orange
+    "#79c0ff",  # sky
+    "#ff7b72",  # salmon
+    "#56d364",  # lime
+    "#e3b341",  # gold
+    "#bc8cff",  # violet
+]
 
+_DEFAULT_TECHS = {
+    "React.js": ["React", "ReactJS"],
+    "Angular":  ["AngularJS", "Angular.js"],
+    "Vue.js":   ["Vue"],
+}
 
-DEFAULT_TECH_CONFIG = _default_tech_config()
+DEFAULT_TECH_CONFIG = [
+    {
+        "name": tech,
+        "aliases": aliases,
+        "color": PALETTE[i % len(PALETTE)],
+        "enabled": True,
+    }
+    for i, (tech, aliases) in enumerate(sorted(_DEFAULT_TECHS.items()))
+]
 
 
 def _parse_body(body):
-    """Extract (techs, normalization, years, colors) from a POST JSON body."""
+    """Extract (techs, normalization, years, colors, include_entries) from a POST JSON body."""
     entries = [t for t in body.get("techs", []) if t.get("enabled")]
     techs = [t["name"] for t in entries]
     norm = {
@@ -42,7 +49,8 @@ def _parse_body(body):
     year_from = int(body.get("year_from", min(YEARS)))
     year_to = int(body.get("year_to", max(YEARS)))
     years = list(range(year_from, year_to + 1))
-    return techs, norm, years, colors
+    include_entries = bool(body.get("include_entries", False))
+    return techs, norm, years, colors, include_entries
 
 
 @app.get("/")
@@ -51,6 +59,7 @@ def index():
         "index.html",
         years=list(range(min(YEARS), max(YEARS) + 1)),
         default_config=DEFAULT_TECH_CONFIG,
+        palette=PALETTE,
         default_year_from=2016,
         default_year_to=max(YEARS),
     )
@@ -59,8 +68,8 @@ def index():
 @app.post("/chart")
 def chart():
     body = request.get_json()
-    techs, norm, years, colors = _parse_body(body)
-    pivot = load_trends(techs, norm, years=years)
+    techs, norm, years, colors, include_entries = _parse_body(body)
+    pivot = load_trends(techs, norm, years=years, include_entries=include_entries)
     if pivot.empty:
         return ("No data for the selected parameters.", 422)
     png = plot_trends(pivot, title=body.get("title", "Framework Adoption"), colors=colors)
@@ -72,8 +81,8 @@ def chart():
 @app.post("/table")
 def table():
     body = request.get_json()
-    techs, norm, years, _ = _parse_body(body)
-    pivot = load_trends(techs, norm, years=years)
+    techs, norm, years, _, include_entries = _parse_body(body)
+    pivot = load_trends(techs, norm, years=years, include_entries=include_entries)
     if pivot.empty:
         return ("<p class='empty'>No data for the selected parameters.</p>", 200)
     html = (
